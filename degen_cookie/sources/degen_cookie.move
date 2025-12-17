@@ -17,7 +17,7 @@ module degen_cookie::degen_cookie {
     // ===== Constants =====
     const MIN_BET: u64 = 100_000_000;         // Minimum bet (0.1 CKIE)
     const AIRDROP_AMOUNT: u64 = 100_000_000_000; // 100 CKIE airdrop
-    const MAX_MULTIPLIER: u64 = 500;          // Max 5x multiplier (500%)
+    const MAX_MULTIPLIER: u64 = 350;          // Max 3.5x multiplier (350%) - matches frontend 3-8s timing
 
     // ===== Structs =====
 
@@ -145,17 +145,18 @@ module degen_cookie::degen_cookie {
     }
 
     /// Helper: Calculate reward for frontend reference
-    /// Formula: multiplier = 100 + 10 * (time_ms - 5000)^2 / 1_000_000
+    /// Formula: t <= 3s: 1.0x, t > 3s: 1.0 + 0.1 * (t - 3)^2
+    /// Matches frontend 3-8 second timing
     public fun calculate_multiplier_percent(time_ms: u64): u64 {
-        if (time_ms <= 5000) {
-            return 100 // 1.0x (no profit)
+        if (time_ms <= 3000) {
+            return 100 // 1.0x (no profit, return bet only)
         };
 
-        let excess_ms = time_ms - 5000;
+        let excess_ms = time_ms - 3000;
         let excess_squared = excess_ms * excess_ms;
         let multiplier = 100 + (10 * excess_squared) / 1_000_000;
 
-        // Cap at max
+        // Cap at max (350 = 3.5x at 8 seconds)
         if (multiplier > MAX_MULTIPLIER) {
             MAX_MULTIPLIER
         } else {
