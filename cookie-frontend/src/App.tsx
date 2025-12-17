@@ -8,15 +8,15 @@ import {
 /**
  * 倍數計算公式:
  * 前3秒: 返還本金 (1倍)
- * 3秒後: 1.0 + 0.1 × (t - 5)²，到8秒給1.9倍
+ * 3秒後: 1.0 + 0.1 × (t - 3)²，到8秒給3.5倍
  */
 const calculateMultiplier = (elapsedTime) => {
     const t = elapsedTime / 1000;
     if (t <= 3) {
         return 1.0;
     } else {
-        // 拋物線增長: 1.0 + 0.1 × (t - 5)²
-        return 1.0 + 0.1 * Math.pow(t - 5, 2);
+        // 拋物線增長: 1.0 + 0.1 × (t - 3)²
+        return 1.0 + 0.1 * Math.pow(t - 3, 2);
     }
 };
 
