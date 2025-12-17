@@ -1,0 +1,303 @@
+/// Module: degen_cookie
+/// A simple boom timing game where players bet CKIE coins, watch their cookie grow,
+/// and must withdraw before it explodes. Win = mint more coins, Lose = burn coins!
+module degen_cookie::degen_cookie {
+    use iota::coin::{Self, Coin, TreasuryCap};
+    use iota::clock::{Self, Clock};
+    use iota::object::{Self, UID};
+    use iota::tx_context::{Self, TxContext};
+    use iota::transfer;
+    use iota::event;
+    use iota::random::{Self, Random};
+    use degen_cookie::cookie_coin::{Self, COOKIE_COIN};
+
+    // ===== Error Codes =====
+    const ENotGameOwner: u64 = 1;
+    const EInsufficientBet: u64 = 2;
+    const EAlreadyClaimed: u64 = 3;
+
+    // ===== Constants =====
+    const MIN_EXPLOSION_TIME_MS: u64 = 5000;  // 5 seconds minimum
+    const MAX_EXPLOSION_TIME_MS: u64 = 10000; // 10 seconds maximum - INTENSE!
+    const SAFE_TIME_MS: u64 = 5000;           // Before 5s: return bet only (no reward)
+    const MIN_BET: u64 = 100_000_000;         // Minimum bet (0.1 CKIE)
+    const AIRDROP_AMOUNT: u64 = 100_000_000_000; // 100 CKIE airdrop
+
+    // ===== Structs =====
+
+    /// Represents an active game session
+    public struct Game has key, store {
+        id: UID,
+        player: address,
+        bet_amount: u64,
+        bet_coins: Coin<COOKIE_COIN>,
+        start_time: u64,
+        explosion_time: u64,
+    }
+
+    /// Track airdrop claims
+    public struct AirdropRegistry has key {
+        id: UID,
+        claimed: vector<address>,
+    }
+
+    // ===== Events =====
+
+    public struct AirdropClaimed has copy, drop {
+        player: address,
+        amount: u64,
+    }
+
+    public struct GameStarted has copy, drop {
+        game_id: address,
+        player: address,
+        bet_amount: u64,
+        start_time: u64,
+    }
+
+    public struct GameExploded has copy, drop {
+        game_id: address,
+        player: address,
+        burned_amount: u64,
+    }
+
+    public struct GameWon has copy, drop {
+        game_id: address,
+        player: address,
+        original_bet: u64,
+        reward_amount: u64,
+        total_received: u64,
+        time_survived: u64,
+    }
+
+    // ===== Initialization =====
+
+    /// Initialize the module
+    fun init(ctx: &mut TxContext) {
+        let registry = AirdropRegistry {
+            id: object::new(ctx),
+            claimed: vector::empty(),
+        };
+        transfer::share_object(registry);
+    }
+
+    // ===== Public Functions =====
+
+    /// Claim initial airdrop of 100 CKIE (one time per address)
+    public entry fun claim_airdrop(
+        registry: &mut AirdropRegistry,
+        treasury_cap: &mut TreasuryCap<COOKIE_COIN>,
+        ctx: &mut TxContext
+    ) {
+        let player = tx_context::sender(ctx);
+
+        // Check if already claimed
+        let already_claimed = vector::contains(&registry.claimed, &player);
+        assert!(!already_claimed, EAlreadyClaimed);
+
+        // Mark as claimed
+        vector::push_back(&mut registry.claimed, player);
+
+        // Mint and send airdrop
+        cookie_coin::airdrop(treasury_cap, player, AIRDROP_AMOUNT, ctx);
+
+        event::emit(AirdropClaimed {
+            player,
+            amount: AIRDROP_AMOUNT,
+        });
+    }
+
+    /// Start a new game by betting CKIE coins
+    public entry fun start_game(
+        bet: Coin<COOKIE_COIN>,
+        random: &Random,
+        clock: &Clock,
+        ctx: &mut TxContext
+    ) {
+        let bet_amount = coin::value(&bet);
+        assert!(bet_amount >= MIN_BET, EInsufficientBet);
+
+        let current_time = clock::timestamp_ms(clock);
+        let player = tx_context::sender(ctx);
+
+        // Generate cryptographically secure random explosion time
+        let random_duration = generate_random_duration(random, ctx);
+        let explosion_time = current_time + random_duration;
+
+        // Create game object
+        let game_id = object::new(ctx);
+        let game_address = object::uid_to_address(&game_id);
+
+        let game = Game {
+            id: game_id,
+            player,
+            bet_amount,
+            bet_coins: bet,
+            start_time: current_time,
+            explosion_time,
+        };
+
+        event::emit(GameStarted {
+            game_id: game_address,
+            player,
+            bet_amount,
+            start_time: current_time,
+        });
+
+        // Transfer game object to player
+        transfer::transfer(game, player);
+    }
+
+    /// Withdraw from the game - mint on win, burn on loss!
+    public entry fun withdraw(
+        game: Game,
+        treasury_cap: &mut TreasuryCap<COOKIE_COIN>,
+        clock: &Clock,
+        ctx: &mut TxContext
+    ) {
+        let Game {
+            id,
+            player,
+            bet_amount,
+            bet_coins,
+            start_time,
+            explosion_time,
+        } = game;
+
+        // Verify ownership
+        assert!(player == tx_context::sender(ctx), ENotGameOwner);
+
+        let current_time = clock::timestamp_ms(clock);
+        let game_address = object::uid_to_address(&id);
+
+        // Check if cookie has exploded
+        if (current_time >= explosion_time) {
+            // Game exploded! BURN THE COINS!
+            cookie_coin::burn(treasury_cap, bet_coins);
+
+            event::emit(GameExploded {
+                game_id: game_address,
+                player,
+                burned_amount: bet_amount,
+            });
+
+            object::delete(id);
+        } else {
+            // Success! Player wins - MINT NEW COINS!
+            let time_survived = current_time - start_time;
+            let reward_amount = calculate_reward(bet_amount, time_survived);
+
+            // Mint reward coins
+            let reward_coins = cookie_coin::mint(treasury_cap, reward_amount, ctx);
+
+            // Merge bet coins back with reward
+            coin::join(&mut bet_coins, reward_coins);
+
+            let total_amount = coin::value(&bet_coins);
+
+            // Transfer all coins to player
+            transfer::public_transfer(bet_coins, player);
+
+            event::emit(GameWon {
+                game_id: game_address,
+                player,
+                original_bet: bet_amount,
+                reward_amount,
+                total_received: total_amount,
+                time_survived,
+            });
+
+            object::delete(id);
+        }
+    }
+
+    // ===== View Functions =====
+
+    /// Check if a game has exploded (read-only)
+    public fun is_exploded(game: &Game, clock: &Clock): bool {
+        let current_time = clock::timestamp_ms(clock);
+        current_time >= game.explosion_time
+    }
+
+    /// Get current potential reward (read-only)
+    public fun get_current_reward(game: &Game, clock: &Clock): u64 {
+        let current_time = clock::timestamp_ms(clock);
+        if (current_time >= game.explosion_time) {
+            0 // Exploded, no reward
+        } else {
+            let time_survived = current_time - game.start_time;
+            calculate_reward(game.bet_amount, time_survived)
+        }
+    }
+
+    /// Get game info (read-only)
+    public fun get_game_info(game: &Game): (address, u64, u64, u64) {
+        (
+            game.player,
+            game.bet_amount,
+            game.start_time,
+            game.explosion_time
+        )
+    }
+
+    /// Get time remaining before explosion (read-only)
+    public fun get_time_until_explosion(game: &Game, clock: &Clock): u64 {
+        let current_time = clock::timestamp_ms(clock);
+        if (current_time >= game.explosion_time) {
+            0
+        } else {
+            game.explosion_time - current_time
+        }
+    }
+
+    /// Check if address has claimed airdrop
+    public fun has_claimed_airdrop(registry: &AirdropRegistry, player: address): bool {
+        vector::contains(&registry.claimed, &player)
+    }
+
+    // ===== Private Helper Functions =====
+
+    /// Calculate reward based on time survived (exponential curve via polynomial)
+    /// Formula:
+    ///   - If t ≤ 5s: reward = 0 (return bet only, safe exit)
+    ///   - If t > 5s: multiplier = 1.0 + 0.1*(t-5)^2, reward = bet * (multiplier - 1.0)
+    /// Returns only the REWARD amount (not including original bet)
+    fun calculate_reward(bet: u64, time_ms: u64): u64 {
+        // If withdrew within 5 seconds, no reward (just return original bet)
+        if (time_ms <= SAFE_TIME_MS) {
+            return 0
+        };
+
+        // Calculate excess time beyond safe zone
+        let excess_ms = time_ms - SAFE_TIME_MS;
+
+        // Polynomial approximation: multiplier = 100 + 10 * (excess_ms)^2 / 1_000_000
+        // This gives us ~3.5x at 10s (conservative exponential growth)
+        let excess_squared = excess_ms * excess_ms;
+        let multiplier_percent = 100 + (10 * excess_squared) / 1_000_000;
+
+        // Calculate reward (multiplier - 100 gives us the profit percentage)
+        let reward = (bet * (multiplier_percent - 100)) / 100;
+        reward
+    }
+
+    /// Generate cryptographically secure random explosion duration
+    /// Uses IOTA's Random module (drand beacon)
+    fun generate_random_duration(random: &Random, ctx: &mut TxContext): u64 {
+        // Create a random generator from the Random object
+        let mut generator = random::new_generator(random, ctx);
+
+        // Generate random duration between MIN and MAX
+        let range = MAX_EXPLOSION_TIME_MS - MIN_EXPLOSION_TIME_MS;
+        let random_value = random::generate_u64_in_range(&mut generator, 0, range);
+
+        MIN_EXPLOSION_TIME_MS + random_value
+    }
+
+    // ===== Test Functions =====
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx);
+    }
+}
