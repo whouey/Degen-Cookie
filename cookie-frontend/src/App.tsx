@@ -6,20 +6,18 @@ import {
 
 
 /**
- * 倍數計算公式 (指數增長):
- * 每一秒增長率翻倍
+ * 倍數計算公式:
+ * 前3秒: 返還本金 (1倍)
+ * 3秒後: 1.0 + 0.1 × (t - 5)²，到8秒給1.9倍
  */
 const calculateMultiplier = (elapsedTime) => {
     const t = elapsedTime / 1000;
-    let currentMult = 1.0;
-    for (let i = 0; i < Math.floor(t); i++) {
-        const rate = 0.02 * Math.pow(2, i);
-        currentMult *= (1 + rate);
+    if (t <= 3) {
+        return 1.0;
+    } else {
+        // 拋物線增長: 1.0 + 0.1 × (t - 5)²
+        return 1.0 + 0.1 * Math.pow(t - 5, 2);
     }
-    const remainingTime = t % 1;
-    const currentRate = 0.02 * Math.pow(2, Math.floor(t));
-    currentMult *= (1 + (currentRate * remainingTime));
-    return currentMult;
 };
 
 export default function App() {
@@ -111,8 +109,8 @@ export default function App() {
         setBetAmount(bet); 
         setMessage({ text: `遊戲進行中... 趕快點擊餅乾！`, type: 'info' });
 
-        // 設定爆炸時間：隨機在 5s 到 10s 之間
-        const crashDuration = Math.random() * (10000 - 5000) + 5000;
+        // 設定爆炸時間：隨機在 3s 到 8s 之間
+        const crashDuration = Math.random() * (8000 - 3000) + 3000;
         startTimeRef.current = Date.now();
         setCrashTime(startTimeRef.current + crashDuration);
     };
@@ -200,7 +198,7 @@ export default function App() {
                                 onClick={startGame}
                                 className="w-full bg-amber-600 hover:bg-amber-700 text-white font-black py-5 rounded-2xl shadow-xl shadow-amber-200 transition-all active:scale-95"
                             >
-                                {!currentAccount ? '請先連接錢包' : '開始挑戰 (5-10秒內爆炸)'}
+                                {!currentAccount ? '請先連接錢包' : '開始挑戰'}
                             </button>
                         </>
                     ) : (
