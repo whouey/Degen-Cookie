@@ -47,7 +47,7 @@ export default function App() {
     const [pendingBet, setPendingBet] = useState(0); // Amount currently being bet
 
     // Refs for game loop
-    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const intervalRef = useRef<number | null>(null);
     const startTimeRef = useRef(0);
     const multiplierRef = useRef(1.00);
     const betCoinIdRef = useRef<string | null>(null);
@@ -117,7 +117,7 @@ export default function App() {
 
             // Parse the result (returns bool)
             if (result.results && result.results[0] && result.results[0].returnValues) {
-                const returnValue = result.results[0].returnValues[0];
+                const returnValue: any = result.results[0].returnValues[0];
                 const claimed = Array.isArray(returnValue) && returnValue[0] === 1;
                 console.log('Has claimed:', claimed);
                 setHasClaimed(claimed);
@@ -287,7 +287,7 @@ export default function App() {
             return;
         }
 
-        const bet = parseFloat(betAmount);
+        const bet = betAmount;
         if (isNaN(bet) || bet < GAME_CONFIG.MIN_BET) {
             setMessage({ text: `❌ 請輸入至少 ${GAME_CONFIG.MIN_BET} CKIE。`, type: 'error' });
             return;
@@ -318,7 +318,7 @@ export default function App() {
                 tx.transferObjects([splitCoin], tx.pure.address(currentAccount.address));
 
                 signAndExecuteTransaction(
-                    { transaction: tx },
+                    { transaction: tx as any }, // Type workaround for version mismatch
                     {
                         onSuccess: (result) => {
                             console.log('Coin split successful:', result);
@@ -433,8 +433,10 @@ export default function App() {
                 const elapsedTime = now - startTimeRef.current;
                 setMultiplier(calculateMultiplier(elapsedTime));
             };
-            intervalRef.current = setInterval(update, 50);
-            return () => clearInterval(intervalRef.current);
+            intervalRef.current = setInterval(update, 50) as any;
+            return () => {
+                if (intervalRef.current) clearInterval(intervalRef.current);
+            };
         }
     }, [isRunning, crashTime, crashGame]);
 
