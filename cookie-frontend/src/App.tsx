@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ConnectButton,
   useCurrentAccount,
@@ -10,10 +10,18 @@ import {
   CONTRACT_CONFIG,
   GAME_CONFIG,
   calculateMultiplier,
-  multiplierToPercent,
   nanosToCkie,
   ckieToNanos,
 } from './constants';
+
+// Type for coin data from IOTA
+interface CoinStruct {
+  coinObjectId: string;
+  balance: string;
+  coinType: string;
+  digest: string;
+  version: string;
+}
 
 export default function App() {
     // IOTA wallet & blockchain state
@@ -35,15 +43,14 @@ export default function App() {
     const [ckieBalance, setCkieBalance] = useState(0);
     const [hasClaimed, setHasClaimed] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [ckieCoins, setCkieCoins] = useState([]);
-    const [actualBalance, setActualBalance] = useState(0); // Real on-chain balance
+    const [ckieCoins, setCkieCoins] = useState<CoinStruct[]>([]);
     const [pendingBet, setPendingBet] = useState(0); // Amount currently being bet
 
     // Refs for game loop
-    const intervalRef = useRef(null);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const startTimeRef = useRef(0);
     const multiplierRef = useRef(1.00);
-    const betCoinIdRef = useRef(null);
+    const betCoinIdRef = useRef<string | null>(null);
 
     useEffect(() => {
         multiplierRef.current = multiplier;
@@ -76,7 +83,6 @@ export default function App() {
                 sum + parseInt(coin.balance), 0
             );
             const balanceInCkie = nanosToCkie(totalBalance);
-            setActualBalance(balanceInCkie);
             setCkieBalance(balanceInCkie); // Display balance (updated from chain)
 
             // Simple heuristic: if you have CKIE, you've claimed airdrop
@@ -104,14 +110,15 @@ export default function App() {
 
             const result = await client.devInspectTransactionBlock({
                 sender: currentAccount.address,
-                transactionBlock: tx,
+                transactionBlock: tx as any, // Type workaround for version mismatch
             });
 
             console.log('Airdrop check result:', result);
 
             // Parse the result (returns bool)
             if (result.results && result.results[0] && result.results[0].returnValues) {
-                const claimed = result.results[0].returnValues[0][0] === 1;
+                const returnValue = result.results[0].returnValues[0];
+                const claimed = Array.isArray(returnValue) && returnValue[0] === 1;
                 console.log('Has claimed:', claimed);
                 setHasClaimed(claimed);
             }
@@ -140,7 +147,7 @@ export default function App() {
 
             signAndExecuteTransaction(
                 {
-                    transaction: tx,
+                    transaction: tx as any, // Type workaround for version mismatch
                 },
                 {
                     onSuccess: () => {
@@ -178,9 +185,9 @@ export default function App() {
     };
 
     // Explosion handler
-    const crashGame = useCallback((finalMultiplier) => {
+    const crashGame = useCallback((finalMultiplier: number) => {
         if (!isRunning) return;
-        clearInterval(intervalRef.current);
+        if (intervalRef.current) clearInterval(intervalRef.current);
         setIsRunning(false);
         setCrashTime(0);
 
@@ -205,49 +212,15 @@ export default function App() {
         }, 4000);
     }, [isRunning, pendingBet]);
 
-    // Burn coins on loss
-    const burnCoins = async () => {
-        if (!currentAccount || !betCoinIdRef.current) return;
-
-        try {
-            const tx = new Transaction();
-            tx.moveCall({
-                target: `${CONTRACT_CONFIG.PACKAGE_ID}::${CONTRACT_CONFIG.MODULE_GAME}::play_and_lose`,
-                arguments: [
-                    tx.object(betCoinIdRef.current),
-                    tx.object(CONTRACT_CONFIG.TREASURY_CAP),
-                ],
-            });
-
-            signAndExecuteTransaction(
-                { transaction: tx },
-                {
-                    onSuccess: () => {
-                        console.log('Coins burned successfully');
-                        loadCKIEBalance();
-                    },
-                    onError: (error) => {
-                        console.error('Burn error:', error);
-                    }
-                }
-            );
-        } catch (error) {
-            console.error('Error burning coins:', error);
-        }
-
-        betCoinIdRef.current = null;
-    };
-
     // Cash out handler
     const cashOut = () => {
         if (!isRunning) return;
         const finalMultiplier = multiplierRef.current;
-        clearInterval(intervalRef.current);
+        if (intervalRef.current) clearInterval(intervalRef.current);
         setIsRunning(false);
         setCrashTime(0);
 
         const winnings = betAmount * finalMultiplier;
-        const profit = winnings - betAmount;
 
         setMessage({
             text: `
@@ -270,7 +243,7 @@ export default function App() {
     };
 
     // Mint full winnings (bet + reward) on win
-    const mintWinnings = async (winnings) => {
+    const mintWinnings = async (winnings: number) => {
         if (!currentAccount) return;
 
         try {
@@ -288,7 +261,7 @@ export default function App() {
             });
 
             signAndExecuteTransaction(
-                { transaction: tx },
+                { transaction: tx as any }, // Type workaround for version mismatch
                 {
                     onSuccess: () => {
                         console.log('Winnings minted successfully:', winnings, 'CKIE');
@@ -388,13 +361,13 @@ export default function App() {
     };
 
     // Actually start the game after coin is ready
-    const startGameAfterSplit = (bet) => {
+    const startGameAfterSplit = (bet: number) => {
         // Burn the bet amount first
         burnBetToStart(bet);
     };
 
     // Burn bet coins at game start
-    const burnBetToStart = async (bet) => {
+    const burnBetToStart = async (bet: number) => {
         if (!currentAccount || !betCoinIdRef.current) return;
 
         setIsLoading(true);
@@ -411,7 +384,7 @@ export default function App() {
             });
 
             signAndExecuteTransaction(
-                { transaction: tx },
+                { transaction: tx as any }, // Type workaround for version mismatch
                 {
                     onSuccess: () => {
                         console.log('Bet burned, game starting');
@@ -431,7 +404,7 @@ export default function App() {
                         setCrashTime(startTimeRef.current + crashDuration);
 
                         // Update balance after burn
-                        setTimeout(() => loadCKIEBalance(), 2000);
+                        setTimeout(() => void loadCKIEBalance(), 2000);
                     },
                     onError: (error) => {
                         console.error('Burn error:', error);
@@ -541,7 +514,7 @@ export default function App() {
                                 <input
                                     type="number"
                                     value={betAmount}
-                                    onChange={(e) => setBetAmount(e.target.value)}
+                                    onChange={(e) => setBetAmount(parseFloat(e.target.value) || 0)}
                                     min={GAME_CONFIG.MIN_BET}
                                     step="0.1"
                                     className="block w-full rounded-2xl border-2 border-gray-50 bg-gray-50 p-4 text-xl font-bold focus:border-amber-400 focus:bg-white transition-all outline-none"
